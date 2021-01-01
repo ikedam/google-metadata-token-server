@@ -1,0 +1,18 @@
+version: '3'
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+      args:
+        - http_proxy
+        - https_proxy
+    environment:
+      - http_proxy
+      - https_proxy
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command:
+      - /bin/sh
