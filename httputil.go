@@ -6,12 +6,12 @@ import (
 	"github.com/ikedam/gtokenserver/log"
 )
 
-func installHTTPLogger(r http.Handler) *http.ServeMux {
+func installHTTPLogger(handler http.Handler) *http.ServeMux {
 	logMux := http.NewServeMux()
-	logMux.HandleFunc("/", func(rsp http.ResponseWriter, req *http.Request) {
-		rspWrapper := newResponseSniffer(rsp)
-		r.ServeHTTP(rspWrapper, req)
-		log.Infof("%+v %+v %+v size=%v", req.Method, req.URL, rspWrapper.Code(), rspWrapper.BodySize())
+	logMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		rspWrapper := newResponseSniffer(w)
+		handler.ServeHTTP(rspWrapper, r)
+		log.Infof("%+v %+v %+v size=%v", r.Method, r.RequestURI, rspWrapper.Code(), rspWrapper.BodySize())
 	})
 	return logMux
 }
