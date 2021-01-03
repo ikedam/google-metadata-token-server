@@ -1,4 +1,4 @@
-package gtokenserver
+package util
 
 import (
 	"net/http"
@@ -6,7 +6,8 @@ import (
 	"github.com/ikedam/gtokenserver/log"
 )
 
-func installHTTPLogger(handler http.Handler) *http.ServeMux {
+// InstallHTTPLogger installs logger
+func InstallHTTPLogger(handler http.Handler) *http.ServeMux {
 	logMux := http.NewServeMux()
 	logMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		rspWrapper := newResponseSniffer(w)

@@ -26,8 +26,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ikedam/gtokenserver"
+	"github.com/ikedam/gtokenserver/constants"
 	"github.com/ikedam/gtokenserver/log"
+	"github.com/ikedam/gtokenserver/server"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
@@ -60,7 +61,7 @@ func main() {
 	pflag.Parse()
 	if err := viper.BindPFlags(pflag.CommandLine); err != nil {
 		log.WithError(err).Errorf("Failed to parse configurations")
-		os.Exit(gtokenserver.ExitCodeInvalidConfiguration)
+		os.Exit(constants.ExitCodeInvalidConfiguration)
 	}
 
 	if viper.GetBool("version") {
@@ -69,18 +70,18 @@ func main() {
 	}
 	if err := log.SetLevelByName(viper.GetString("log-level")); err != nil {
 		log.WithError(err).Errorf("Failed to configure log-level")
-		os.Exit(gtokenserver.ExitCodeInvalidConfiguration)
+		os.Exit(constants.ExitCodeInvalidConfiguration)
 	}
 
-	var config gtokenserver.ServerConfig
+	var config server.Config
 	if err := viper.Unmarshal(&config); err != nil {
 		log.WithError(err).Errorf("Failed to parse configurations")
-		os.Exit(gtokenserver.ExitCodeInvalidConfiguration)
+		os.Exit(constants.ExitCodeInvalidConfiguration)
 	}
-	server := gtokenserver.NewServer(&config)
-	if err := server.Serve(); err != nil {
+	s := server.NewServer(&config)
+	if err := s.Serve(); err != nil {
 		log.WithError(err).Errorf("Failed to launch server")
-		os.Exit(gtokenserver.ExitCodeInvalidConfiguration)
+		os.Exit(constants.ExitCodeInvalidConfiguration)
 	}
 	os.Exit(0)
 }

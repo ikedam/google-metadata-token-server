@@ -1,5 +1,5 @@
-// Package gtokenserver provides a dummy metadata server providing tokens to access Google Cloud Platform
-package gtokenserver
+// Package server provides a dummy metadata server providing tokens to access Google Cloud Platform
+package server
 
 import (
 	"context"
@@ -10,14 +10,14 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/ikedam/gtokenserver/internal/util"
 	"github.com/ikedam/gtokenserver/log"
-	"github.com/ikedam/gtokenserver/util"
 
 	"golang.org/x/oauth2/google"
 )
 
-// ServerConfig is a configuration to the server to launch
-type ServerConfig struct {
+// Config is a configuration to the server to launch
+type Config struct {
 	Host   string
 	Port   int
 	Scopes []string
@@ -39,12 +39,12 @@ func (c *credentialsCache) setClientID(clientID string) {
 
 // Server is an instance of gtokenserver
 type Server struct {
-	config ServerConfig
+	config Config
 	cache  credentialsCache
 }
 
 // NewServer creates a Server
-func NewServer(config *ServerConfig) *Server {
+func NewServer(config *Config) *Server {
 	return &Server{
 		config: *config,
 	}
@@ -69,7 +69,7 @@ func (s *Server) Serve() error {
 	serviceAccount.HandleFunc("/identity", s.handleServiceAccountIdentity)
 
 	srv := &http.Server{
-		Handler: installHTTPLogger(checkMetadataFlavor(r)),
+		Handler: util.InstallHTTPLogger(checkMetadataFlavor(r)),
 		Addr:    fmt.Sprintf("%v:%v", s.config.Host, s.config.Port),
 	}
 

@@ -1,4 +1,4 @@
-package gtokenserver
+package constants
 
 const (
 	// ExitCodeInvalidConfiguration is caused for invalid configuration.
