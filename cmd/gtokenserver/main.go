@@ -55,6 +55,7 @@ func main() {
 		},
 		"scopes for the token",
 	)
+	pflag.String("project", "", "Google Project ID")
 	pflag.String("log-level", "Warning", "Log level: Trace, Debug, Info, Warning, Error")
 	pflag.BoolP("version", "v", false, "Show version and exit")
 

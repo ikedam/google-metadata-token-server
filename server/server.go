@@ -18,9 +18,10 @@ import (
 
 // Config is a configuration to the server to launch
 type Config struct {
-	Host   string
-	Port   int
-	Scopes []string
+	Host    string
+	Port    int
+	Scopes  []string
+	Project string
 }
 
 // Server is an instance of gtokenserver
@@ -43,6 +44,7 @@ func (s *Server) Serve() error {
 
 	computeMetadataV1 := r.PathPrefix("/computeMetadata/v1").Subrouter()
 	project := computeMetadataV1.PathPrefix("/project").Subrouter()
+	project.HandleFunc("/project-id", s.handleProjectProjectID)
 	project.HandleFunc("/numeric-project-id", s.handleProjectNumericProjectID)
 
 	serviceAccounts := computeMetadataV1.PathPrefix("/instance/service-accounts").Subrouter()
@@ -91,7 +93,7 @@ func (s *Server) getDefaultCredentials(scopes ...string) *cachedDefaultCredentia
 			Error("Could not retrieve default credentials")
 		return nil
 	}
-	newCache, err := newCachedDefaultCredentials(cred)
+	newCache, err := newCachedDefaultCredentials(cred, s.config.Project)
 	if err != nil {
 		log.WithError(err).
 			Error("Could not resolve default credentials")
@@ -109,9 +111,28 @@ func (s *Server) getDefaultCredentials(scopes ...string) *cachedDefaultCredentia
 	return newCache
 }
 
+func (s *Server) handleProjectProjectID(w http.ResponseWriter, r *http.Request) {
+	cred := s.getDefaultCredentials()
+	if cred == nil {
+		s.writeTextResponse(w, "")
+		return
+	}
+	s.writeTextResponse(w, cred.ProjectID)
+}
+
 func (s *Server) handleProjectNumericProjectID(w http.ResponseWriter, r *http.Request) {
-	// TODO
-	s.writeTextResponse(w, "0")
+	cred := s.getDefaultCredentials()
+	if cred == nil {
+		s.writeTextResponse(w, "0")
+		return
+	}
+	numericProjectID, err := cred.GetNumericProjectID()
+	if err != nil {
+		log.WithError(err).Error("Failed to resolve numeric project id")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	s.writeTextResponse(w, fmt.Sprintf("%v", numericProjectID))
 }
 
 func (s *Server) handleServiceAccounts(w http.ResponseWriter, r *http.Request) {
