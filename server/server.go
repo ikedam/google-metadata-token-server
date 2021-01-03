@@ -23,24 +23,10 @@ type Config struct {
 	Scopes []string
 }
 
-type credentialsCache struct {
-	clientID string
-	email    string
-}
-
-func (c *credentialsCache) setClientID(clientID string) {
-	if c.clientID == clientID {
-		return
-	}
-	*c = credentialsCache{
-		clientID: clientID,
-	}
-}
-
 // Server is an instance of gtokenserver
 type Server struct {
 	config Config
-	cache  credentialsCache
+	cache  *cachedDefaultCredentials
 }
 
 // NewServer creates a Server
@@ -63,6 +49,7 @@ func (s *Server) Serve() error {
 	serviceAccounts.HandleFunc("/", s.handleServiceAccounts)
 
 	serviceAccount := serviceAccounts.PathPrefix("/{account}").Subrouter()
+	serviceAccount.Use(s.serviceAccountMiddleware)
 	serviceAccount.HandleFunc("/", s.handleServiceAccount)
 	serviceAccount.HandleFunc("/email", s.handleServiceAccountEmail)
 	serviceAccount.HandleFunc("/token", s.handleServiceAccountToken)
@@ -91,36 +78,40 @@ func checkMetadataFlavor(handler http.Handler) *http.ServeMux {
 	return m
 }
 
-func (s *Server) getDefaultCredentials(scopes ...string) *google.Credentials {
-	cred, err := google.FindDefaultCredentials(context.Background(), scopes...)
+var lastCachedDefaultCredentials *cachedDefaultCredentials
+
+func (s *Server) getDefaultCredentials(scopes ...string) *cachedDefaultCredentials {
+	actualScopes := scopes
+	if scopes == nil {
+		actualScopes = s.config.Scopes
+	}
+	cred, err := google.FindDefaultCredentials(context.Background(), actualScopes...)
 	if err != nil {
 		log.WithError(err).
 			Error("Could not retrieve default credentials")
 		return nil
 	}
-	return cred
+	newCache, err := newCachedDefaultCredentials(cred)
+	if err != nil {
+		log.WithError(err).
+			Error("Could not resolve default credentials")
+		return nil
+	}
+	if actualScopes != nil {
+		// Don't cache if scopes are explicitly specified.
+		return newCache
+	}
+	cached := lastCachedDefaultCredentials
+	if cached != nil && cached.ClientID == newCache.ClientID {
+		return cached
+	}
+	lastCachedDefaultCredentials = newCache
+	return newCache
 }
 
 func (s *Server) handleProjectNumericProjectID(w http.ResponseWriter, r *http.Request) {
 	// TODO
 	s.writeTextResponse(w, "0")
-}
-
-func (s *Server) getEmail(cred *google.Credentials) (string, error) {
-	clientID, err := util.GetIDOfCredentials(cred)
-	if err != nil {
-		return "", err
-	}
-	if s.cache.clientID == clientID && s.cache.email != "" {
-		return s.cache.email, nil
-	}
-	email, err := util.GetEmailOfCredentials(cred)
-	if err != nil {
-		return "", err
-	}
-	s.cache.setClientID(clientID)
-	s.cache.email = email
-	return email, nil
 }
 
 func (s *Server) handleServiceAccounts(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +120,7 @@ func (s *Server) handleServiceAccounts(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	email, err := s.getEmail(cred)
+	email, err := cred.GetEmail()
 	if err != nil {
 		log.WithError(err).
 			Error("Could not retrieve email of the credential")
@@ -139,6 +130,42 @@ func (s *Server) handleServiceAccounts(w http.ResponseWriter, r *http.Request) {
 	s.writeTextResponse(w, fmt.Sprintf("default/\n%s\n", email))
 }
 
+var credentialsKey = "credentials"
+
+func (s *Server) serviceAccountMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cred := s.getDefaultCredentials()
+		if cred == nil {
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), &credentialsKey, cred))
+
+		vars := mux.Vars(r)
+		if vars["account"] == "default" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// verify email
+		email, err := cred.GetEmail()
+		if err != nil {
+			log.WithError(err).
+				Error("Could not retrieve email of the credential")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if vars["account"] != email {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) getCredentialsFromContext(ctx context.Context) *cachedDefaultCredentials {
+	return ctx.Value(&credentialsKey).(*cachedDefaultCredentials)
+}
+
 type serviceAccountRecursiveResponse struct {
 	Scopes  []string `json:"scopes"`
 	Email   string   `json:"email"`
@@ -146,28 +173,16 @@ type serviceAccountRecursiveResponse struct {
 }
 
 func (s *Server) handleServiceAccount(w http.ResponseWriter, r *http.Request) {
-	cred := s.getDefaultCredentials()
-	if cred == nil {
-		w.WriteHeader(http.StatusInternalServerError)
+	if r.URL.Query().Get("recursive") != "true" {
+		s.writeTextResponse(w, "email/\nscopes/\ntoken\n")
 		return
 	}
-	email, err := s.getEmail(cred)
+	cred := s.getCredentialsFromContext(r.Context())
+	email, err := cred.GetEmail()
 	if err != nil {
 		log.WithError(err).
 			Error("Could not retrieve email of the credential")
 		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	vars := mux.Vars(r)
-	if vars["account"] != "default" && vars["account"] != email {
-		log.WithField("method", r.Method).
-			WithField("path", r.RequestURI).
-			Warning("Access to an unknown account")
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	if r.URL.Query().Get("recursive") != "true" {
-		s.writeTextResponse(w, "email/\nscopes/\ntoken\n")
 		return
 	}
 	response := serviceAccountRecursiveResponse{
@@ -179,24 +194,12 @@ func (s *Server) handleServiceAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServiceAccountEmail(w http.ResponseWriter, r *http.Request) {
-	cred := s.getDefaultCredentials()
-	if cred == nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	email, err := s.getEmail(cred)
+	cred := s.getCredentialsFromContext(r.Context())
+	email, err := cred.GetEmail()
 	if err != nil {
 		log.WithError(err).
 			Error("Could not retrieve email of the credential")
 		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	vars := mux.Vars(r)
-	if vars["account"] != "default" && vars["account"] != email {
-		log.WithField("method", r.Method).
-			WithField("path", r.RequestURI).
-			Warning("Access to an unknown account")
-		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	s.writeTextResponse(w, email)
@@ -209,37 +212,16 @@ type tokenResponse struct {
 }
 
 func (s *Server) handleServiceAccountToken(w http.ResponseWriter, r *http.Request) {
-	cred := s.getDefaultCredentials()
-	if cred == nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+	cred := s.getCredentialsFromContext(r.Context())
+	scopes := r.URL.Query().Get("scopes")
+	if scopes != "" {
+		cred = s.getDefaultCredentials(strings.Split(r.URL.Query().Get("scopes"), ",")...)
+		if cred == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	}
-	email, err := s.getEmail(cred)
-	if err != nil {
-		log.WithError(err).
-			Error("Could not retrieve email of the credential")
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	vars := mux.Vars(r)
-	if vars["account"] != "default" && vars["account"] != email {
-		log.WithField("method", r.Method).
-			WithField("path", r.RequestURI).
-			Warning("Access to an unknown account")
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	scopes := s.config.Scopes
-	if r.URL.Query().Get("scopes") != "" {
-		scopes = strings.Split(r.URL.Query().Get("scopes"), ",")
-	}
-	cred = s.getDefaultCredentials(scopes...)
-	if cred == nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	token, err := cred.TokenSource.Token()
+	token, err := cred.Token()
 	if err != nil {
 		log.WithError(err).
 			Error("Could not retrieve token")
@@ -254,27 +236,6 @@ func (s *Server) handleServiceAccountToken(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleServiceAccountIdentity(w http.ResponseWriter, r *http.Request) {
-	cred := s.getDefaultCredentials()
-	if cred == nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	email, err := s.getEmail(cred)
-	if err != nil {
-		log.WithError(err).
-			Error("Could not retrieve email of the credential")
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	vars := mux.Vars(r)
-	if vars["account"] != "default" && vars["account"] != email {
-		log.WithField("method", r.Method).
-			WithField("path", r.RequestURI).
-			Warning("Access to an unknown account")
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
 	log.Warningf("/identity endpoint is not supported.")
 	w.WriteHeader(http.StatusNotFound)
 }
