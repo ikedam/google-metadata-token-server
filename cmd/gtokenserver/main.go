@@ -45,6 +45,15 @@ func main() {
 		"Address to bind: specify 0.0.0.0 to accept remote connections especially inside docker.",
 	)
 	pflag.IntP("port", "p", 80, "Port to bind")
+	pflag.StringSliceP(
+		"scopes",
+		"s",
+		[]string{
+			"https://www.googleapis.com/auth/cloud-platform",
+			"https://www.googleapis.com/auth/userinfo.email",
+		},
+		"scopes for the token",
+	)
 	pflag.String("log-level", "Warning", "Log level: Trace, Debug, Info, Warning, Error")
 	pflag.BoolP("version", "v", false, "Show version and exit")
 

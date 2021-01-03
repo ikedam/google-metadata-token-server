@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -17,17 +18,29 @@ import (
 
 // ServerConfig is a configuration to the server to launch
 type ServerConfig struct {
-	Host string
-	Port int
+	Host   string
+	Port   int
+	Scopes []string
+}
+
+type credentialsCache struct {
+	clientID string
+	email    string
+}
+
+func (c *credentialsCache) setClientID(clientID string) {
+	if c.clientID == clientID {
+		return
+	}
+	*c = credentialsCache{
+		clientID: clientID,
+	}
 }
 
 // Server is an instance of gtokenserver
 type Server struct {
 	config ServerConfig
-	cache  struct {
-		clientID string
-		email    string
-	}
+	cache  credentialsCache
 }
 
 // NewServer creates a Server
@@ -53,6 +66,7 @@ func (s *Server) Serve() error {
 	serviceAccount.HandleFunc("/", s.handleServiceAccount)
 	serviceAccount.HandleFunc("/email", s.handleServiceAccountEmail)
 	serviceAccount.HandleFunc("/token", s.handleServiceAccountToken)
+	serviceAccount.HandleFunc("/identity", s.handleServiceAccountIdentity)
 
 	srv := &http.Server{
 		Handler: installHTTPLogger(checkMetadataFlavor(r)),
@@ -77,8 +91,8 @@ func checkMetadataFlavor(handler http.Handler) *http.ServeMux {
 	return m
 }
 
-func (s *Server) getDefaultCredentials() *google.Credentials {
-	cred, err := google.FindDefaultCredentials(context.Background())
+func (s *Server) getDefaultCredentials(scopes ...string) *google.Credentials {
+	cred, err := google.FindDefaultCredentials(context.Background(), scopes...)
 	if err != nil {
 		log.WithError(err).
 			Error("Could not retrieve default credentials")
@@ -104,7 +118,7 @@ func (s *Server) getEmail(cred *google.Credentials) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.cache.clientID = clientID
+	s.cache.setClientID(clientID)
 	s.cache.email = email
 	return email, nil
 }
@@ -126,7 +140,7 @@ func (s *Server) handleServiceAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 type serviceAccountRecursiveResponse struct {
-	Scopes  string   `json:"scopes"`
+	Scopes  []string `json:"scopes"`
 	Email   string   `json:"email"`
 	Aliases []string `json:"aliases"`
 }
@@ -157,8 +171,7 @@ func (s *Server) handleServiceAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := serviceAccountRecursiveResponse{
-		// TODO
-		Scopes:  "\nemail\nhttps://www.googleapis.com/auth/appengine.admin\n",
+		Scopes:  s.config.Scopes,
 		Email:   email,
 		Aliases: []string{"default"},
 	}
@@ -216,6 +229,16 @@ func (s *Server) handleServiceAccountToken(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+
+	scopes := s.config.Scopes
+	if r.URL.Query().Get("scopes") != "" {
+		scopes = strings.Split(r.URL.Query().Get("scopes"), ",")
+	}
+	cred = s.getDefaultCredentials(scopes...)
+	if cred == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	token, err := cred.TokenSource.Token()
 	if err != nil {
 		log.WithError(err).
@@ -228,6 +251,32 @@ func (s *Server) handleServiceAccountToken(w http.ResponseWriter, r *http.Reques
 		TokenType:   token.TokenType,
 		ExpiresIn:   int(token.Expiry.Sub(time.Now()).Seconds()),
 	})
+}
+
+func (s *Server) handleServiceAccountIdentity(w http.ResponseWriter, r *http.Request) {
+	cred := s.getDefaultCredentials()
+	if cred == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	email, err := s.getEmail(cred)
+	if err != nil {
+		log.WithError(err).
+			Error("Could not retrieve email of the credential")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	vars := mux.Vars(r)
+	if vars["account"] != "default" && vars["account"] != email {
+		log.WithField("method", r.Method).
+			WithField("path", r.RequestURI).
+			Warning("Access to an unknown account")
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	log.Warningf("/identity endpoint is not supported.")
+	w.WriteHeader(http.StatusNotFound)
 }
 
 func (s *Server) writeTextResponse(w http.ResponseWriter, text string) {
