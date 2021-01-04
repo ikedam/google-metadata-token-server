@@ -24,7 +24,7 @@ type cachedDefaultCredentials struct {
 }
 
 func newCachedDefaultCredentials(credentials *google.Credentials, projectID string) (*cachedDefaultCredentials, error) {
-	clientID, err := util.GetEmailOfCredentials(credentials)
+	clientID, err := util.GetIDOfCredentials(credentials)
 	if err != nil {
 		return nil, err
 	}

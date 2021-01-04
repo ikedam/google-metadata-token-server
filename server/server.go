@@ -5,7 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,16 +22,20 @@ import (
 
 // Config is a configuration to the server to launch
 type Config struct {
-	Host    string
-	Port    int
-	Scopes  []string
-	Project string
+	Host                         string
+	Port                         int
+	Scopes                       []string
+	Project                      string
+	CloudSDKConfig               string `mapstructure:"cloudsdk-config"`
+	GoogleApplicationCredentials string `mapstructure:"google-application-credentials"`
 }
 
 // Server is an instance of gtokenserver
 type Server struct {
-	config Config
-	cache  *cachedDefaultCredentials
+	config                           Config
+	cache                            *cachedDefaultCredentials
+	warnGoogleApplicationCredentials bool
+	warnCoudSDKConfig                bool
 }
 
 // NewServer creates a Server
@@ -57,12 +65,19 @@ func (s *Server) Serve() error {
 	serviceAccount.HandleFunc("/token", s.handleServiceAccountToken)
 	serviceAccount.HandleFunc("/identity", s.handleServiceAccountIdentity)
 
+	hostport := fmt.Sprintf("%v:%v", s.config.Host, s.config.Port)
+	addr, err := net.Listen("tcp", hostport)
+	if err != nil {
+		return fmt.Errorf("Failed to listen %v: %w", hostport, err)
+	}
+	defer addr.Close()
 	srv := &http.Server{
 		Handler: util.InstallHTTPLogger(checkMetadataFlavor(r)),
-		Addr:    fmt.Sprintf("%v:%v", s.config.Host, s.config.Port),
 	}
 
-	return srv.ListenAndServe()
+	log.Infof("Listening %v...", addr.Addr().String())
+
+	return srv.Serve(addr)
 }
 
 func checkMetadataFlavor(handler http.Handler) *http.ServeMux {
@@ -82,15 +97,80 @@ func checkMetadataFlavor(handler http.Handler) *http.ServeMux {
 
 var lastCachedDefaultCredentials *cachedDefaultCredentials
 
-func (s *Server) getDefaultCredentials(scopes ...string) *cachedDefaultCredentials {
+func (s *Server) credentialsFromFile(ctx context.Context, file string, scopes ...string) (*google.Credentials, error) {
+	body, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to read from %v: %w", file, err)
+	}
+	return google.CredentialsFromJSON(ctx, body, scopes...)
+}
+
+func (s *Server) findCredentials(scopes ...string) (*google.Credentials, error) {
+	ctx := context.Background()
+	if s.config.GoogleApplicationCredentials != "" {
+		file, err := os.Stat(s.config.GoogleApplicationCredentials)
+		if !os.IsNotExist(err) && !file.IsDir() {
+			cred, err := s.credentialsFromFile(ctx, s.config.GoogleApplicationCredentials, scopes...)
+			if err == nil { // Be careful: not != but ==
+				s.warnGoogleApplicationCredentials = false
+				return cred, nil
+			}
+			if !s.warnGoogleApplicationCredentials {
+				s.warnGoogleApplicationCredentials = true
+				log.WithError(err).
+					WithField("file", s.config.GoogleApplicationCredentials).
+					Warning("Failed to load specified credentials file: ignored.")
+			}
+		} else {
+			if !s.warnGoogleApplicationCredentials {
+				s.warnGoogleApplicationCredentials = true
+				log.WithField("file", s.config.GoogleApplicationCredentials).
+					Warning("Failed to stat specified credentials file: ignored.")
+			}
+		}
+	}
+	cloudSDKConfig := s.config.CloudSDKConfig
+	if cloudSDKConfig == "" {
+		// CLOUDSDK_CONFIG doesn't supported in golang oauth2 library.
+		// See: https://github.com/googleapis/google-cloud-go/issues/288
+		cloudSDKConfig = os.Getenv("CLOUDSDK_CONFIG")
+	}
+	if cloudSDKConfig != "" {
+		applicationConfig := filepath.Join(cloudSDKConfig, "application_default_credentials.json")
+		file, err := os.Stat(applicationConfig)
+		if !os.IsNotExist(err) && !file.IsDir() {
+			cred, err := s.credentialsFromFile(ctx, applicationConfig, scopes...)
+			if err == nil { // Be careful: not != but ==
+				s.warnCoudSDKConfig = false
+				return cred, nil
+			}
+			if !s.warnCoudSDKConfig {
+				s.warnCoudSDKConfig = true
+				log.WithError(err).
+					WithField("directory", applicationConfig).
+					Warning("Failed to load credentials from specified cloud-sdk configuration directory: ignored.")
+			}
+		}
+	}
+	return google.FindDefaultCredentials(ctx, scopes...)
+}
+
+func (s *Server) getCredentials(scopes ...string) *cachedDefaultCredentials {
 	actualScopes := scopes
 	if scopes == nil {
 		actualScopes = s.config.Scopes
 	}
-	cred, err := google.FindDefaultCredentials(context.Background(), actualScopes...)
+	cred, err := s.findCredentials(actualScopes...)
 	if err != nil {
 		log.WithError(err).
-			Error("Could not retrieve default credentials")
+			Error(
+				"Could not retrieve default credentials\n" +
+					"You may haven't set up credentials. You can set up your credentials in one of those ways:\n" +
+					"\n" +
+					"  * Run `gcloud auth application-default login`. Share /root/.config/gcloud with volume mounts in docker containers.\n" +
+					"  * Put the service account key file (a json file), and specify the path with GOOGLE_APPLICATION_CREDENTIALS environment variable.\n" +
+					"\n\n",
+			)
 		return nil
 	}
 	newCache, err := newCachedDefaultCredentials(cred, s.config.Project)
@@ -99,7 +179,7 @@ func (s *Server) getDefaultCredentials(scopes ...string) *cachedDefaultCredentia
 			Error("Could not resolve default credentials")
 		return nil
 	}
-	if actualScopes != nil {
+	if scopes != nil {
 		// Don't cache if scopes are explicitly specified.
 		return newCache
 	}
@@ -108,11 +188,17 @@ func (s *Server) getDefaultCredentials(scopes ...string) *cachedDefaultCredentia
 		return cached
 	}
 	lastCachedDefaultCredentials = newCache
+	email, err := lastCachedDefaultCredentials.GetEmail()
+	if err == nil { // Be careful: not err != nil, but err == nil
+		log.Infof("New credentials: %v", email)
+	} else {
+		log.Infof("New credentials: client_id=%v", newCache.ClientID)
+	}
 	return newCache
 }
 
 func (s *Server) handleProjectProjectID(w http.ResponseWriter, r *http.Request) {
-	cred := s.getDefaultCredentials()
+	cred := s.getCredentials()
 	if cred == nil {
 		s.writeTextResponse(w, "")
 		return
@@ -121,7 +207,7 @@ func (s *Server) handleProjectProjectID(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleProjectNumericProjectID(w http.ResponseWriter, r *http.Request) {
-	cred := s.getDefaultCredentials()
+	cred := s.getCredentials()
 	if cred == nil {
 		s.writeTextResponse(w, "0")
 		return
@@ -136,7 +222,7 @@ func (s *Server) handleProjectNumericProjectID(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) handleServiceAccounts(w http.ResponseWriter, r *http.Request) {
-	cred := s.getDefaultCredentials()
+	cred := s.getCredentials()
 	if cred == nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -155,7 +241,7 @@ var credentialsKey = "credentials"
 
 func (s *Server) serviceAccountMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cred := s.getDefaultCredentials()
+		cred := s.getCredentials()
 		if cred == nil {
 			return
 		}
@@ -236,7 +322,7 @@ func (s *Server) handleServiceAccountToken(w http.ResponseWriter, r *http.Reques
 	cred := s.getCredentialsFromContext(r.Context())
 	scopes := r.URL.Query().Get("scopes")
 	if scopes != "" {
-		cred = s.getDefaultCredentials(strings.Split(r.URL.Query().Get("scopes"), ",")...)
+		cred = s.getCredentials(strings.Split(r.URL.Query().Get("scopes"), ",")...)
 		if cred == nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			return

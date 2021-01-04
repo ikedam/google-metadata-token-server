@@ -1,0 +1,18 @@
+# Configuration file.
+# You can pass this file with --config option.
+
+# host and port to bind.
+# Defaults to localhost:80.
+# Specify 0.0.0.0 for host to accept remote connections.
+# Accepting remote connections cause security threats, and use it only inside closed network,
+# like with a docker container without exposed ports.
+host: 0.0.0.0
+port: 80
+
+# log-level: Info
+# scopes:
+#   - https://www.googleapis.com/auth/cloud-platform
+#   - https://www.googleapis.com/auth/userinfo.email
+# project: your-gcp-project
+# cloudsdk-config: /path/to/cloud-sdk/config
+# google-application-credentials: /path/to/service-account.json

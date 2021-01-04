@@ -56,7 +56,10 @@ func main() {
 		"scopes for the token",
 	)
 	pflag.String("project", "", "Google Project ID")
-	pflag.String("log-level", "Warning", "Log level: Trace, Debug, Info, Warning, Error")
+	pflag.String("config", "", "Configuration file")
+	pflag.String("cloudsdk-config", "", "Directory storing configurations for cloud-sdk (gcloud command)")
+	pflag.String("google-application-credentials", "", "File storing JSON key for the service account")
+	pflag.String("log-level", "Info", "Log level: Trace, Debug, Info, Warning, Error")
 	pflag.BoolP("version", "v", false, "Show version and exit")
 
 	pflag.Parse()
@@ -69,9 +72,29 @@ func main() {
 		fmt.Printf("gtokenserver %v:%v\n", version, commit)
 		os.Exit(0)
 	}
-	if err := log.SetLevelByName(viper.GetString("log-level")); err != nil {
+	logLevel := viper.GetString("log-level")
+	if err := log.SetLevelByName(logLevel); err != nil {
 		log.WithError(err).Errorf("Failed to configure log-level")
 		os.Exit(constants.ExitCodeInvalidConfiguration)
+	}
+	configfile := viper.GetString("config")
+	if configfile != "" {
+		viper.SetConfigFile(configfile)
+		if err := viper.ReadInConfig(); err != nil {
+			log.WithError(err).
+				WithField("config", configfile).
+				Errorf("Failed to read configuration file: ignored")
+		} else {
+			log.WithField("config", viper.ConfigFileUsed).
+				Debug("Using config file")
+		}
+		if logLevel != viper.GetString("log-level") {
+			logLevel = viper.GetString("log-level")
+			if err := log.SetLevelByName(logLevel); err != nil {
+				log.WithError(err).Errorf("Failed to configure log-level")
+				os.Exit(constants.ExitCodeInvalidConfiguration)
+			}
+		}
 	}
 
 	var config server.Config
@@ -79,6 +102,7 @@ func main() {
 		log.WithError(err).Errorf("Failed to parse configurations")
 		os.Exit(constants.ExitCodeInvalidConfiguration)
 	}
+	log.WithField("config", config).Debugf("Configuration read")
 	s := server.NewServer(&config)
 	if err := s.Serve(); err != nil {
 		log.WithError(err).Errorf("Failed to launch server")
