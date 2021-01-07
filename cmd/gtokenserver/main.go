@@ -45,7 +45,7 @@ func main() {
 		"localhost",
 		"Address to bind: specify 0.0.0.0 to accept remote connections especially inside docker.",
 	)
-	pflag.IntP("port", "p", 80, "Port to bind")
+	pflag.IntP("port", "p", 8080, "Port to bind")
 	pflag.StringSliceP(
 		"scopes",
 		"s",
