@@ -68,7 +68,7 @@ func (s *Server) Serve() error {
 	hostport := fmt.Sprintf("%v:%v", s.config.Host, s.config.Port)
 	addr, err := net.Listen("tcp", hostport)
 	if err != nil {
-		return fmt.Errorf("Failed to listen %v: %w", hostport, err)
+		return fmt.Errorf("failed to listen %v: %w", hostport, err)
 	}
 	defer addr.Close()
 	srv := &http.Server{
@@ -95,12 +95,10 @@ func checkMetadataFlavor(handler http.Handler) *http.ServeMux {
 	return m
 }
 
-var lastCachedDefaultCredentials *cachedDefaultCredentials
-
 func (s *Server) credentialsFromFile(ctx context.Context, file string, scopes ...string) (*google.Credentials, error) {
 	body, err := ioutil.ReadFile(file)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read from %v: %w", file, err)
+		return nil, fmt.Errorf("failed to read from %v: %w", file, err)
 	}
 	return google.CredentialsFromJSON(ctx, body, scopes...)
 }
@@ -183,12 +181,12 @@ func (s *Server) getCredentials(scopes ...string) *cachedDefaultCredentials {
 		// Don't cache if scopes are explicitly specified.
 		return newCache
 	}
-	cached := lastCachedDefaultCredentials
+	cached := s.cache
 	if cached != nil && cached.ClientID == newCache.ClientID {
 		return cached
 	}
-	lastCachedDefaultCredentials = newCache
-	email, err := lastCachedDefaultCredentials.GetEmail()
+	s.cache = newCache
+	email, err := s.cache.GetEmail()
 	if err == nil { // Be careful: not err != nil, but err == nil
 		log.Infof("New credentials: %v", email)
 	} else {
@@ -338,7 +336,7 @@ func (s *Server) handleServiceAccountToken(w http.ResponseWriter, r *http.Reques
 	s.writeJSONResponse(w, &tokenResponse{
 		AccessToken: token.AccessToken,
 		TokenType:   token.TokenType,
-		ExpiresIn:   int(token.Expiry.Sub(time.Now()).Seconds()),
+		ExpiresIn:   int(time.Until(token.Expiry).Seconds()),
 	})
 }
 

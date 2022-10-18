@@ -74,30 +74,30 @@ func (c *cachedDefaultCredentials) GetNumericProjectID() (int64, error) {
 		url.PathEscape(c.ProjectID),
 	))
 	if err != nil {
-		return 0, fmt.Errorf("Failed to resolve numeric project number: %w", err)
+		return 0, fmt.Errorf("failed to resolve numeric project number: %w", err)
 	}
 	defer rsp.Body.Close()
 	body, err := ioutil.ReadAll(rsp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("Failed to resolve numeric project number: %w", err)
+		return 0, fmt.Errorf("failed to resolve numeric project number: %w", err)
 	}
 	if rsp.StatusCode != http.StatusOK {
 		log.WithField("status", rsp.StatusCode).
 			WithField("body", string(body)).
 			Debugf("Unexpected response from project endpoint")
-		return 0, fmt.Errorf("Unexpected response from project endpoint: %v", rsp.StatusCode)
+		return 0, fmt.Errorf("unexpected response from project endpoint: %v", rsp.StatusCode)
 	}
 
 	var projectResponse projectResponseHolder
 	if err := json.Unmarshal(body, &projectResponse); err != nil {
 		log.WithField("body", string(body)).
 			Debugf("Unexpected response from project endpoint")
-		return 0, fmt.Errorf("Unexpected response from project endpoint: %v", rsp.StatusCode)
+		return 0, fmt.Errorf("unexpected response from project endpoint: %v", rsp.StatusCode)
 	}
 
 	numericProjectID, err := strconv.ParseInt(projectResponse.ProjectNumber, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("Unexpected response from project endpoint: %w", err)
+		return 0, fmt.Errorf("unexpected response from project endpoint: %w", err)
 	}
 
 	c.numericProjectID = numericProjectID
