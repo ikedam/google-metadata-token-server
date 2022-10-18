@@ -49,8 +49,10 @@ func NewServer(config *Config) *Server {
 func (s *Server) Serve() error {
 	r := mux.NewRouter()
 	r.NotFoundHandler = http.HandlerFunc(s.notFound)
+	r.HandleFunc("/", s.handleRoot)
 
 	computeMetadataV1 := r.PathPrefix("/computeMetadata/v1").Subrouter()
+	computeMetadataV1.Use(checkMetadataFlavorMiddleware)
 	project := computeMetadataV1.PathPrefix("/project").Subrouter()
 	project.HandleFunc("/project-id", s.handleProjectProjectID)
 	project.HandleFunc("/numeric-project-id", s.handleProjectNumericProjectID)
@@ -72,7 +74,7 @@ func (s *Server) Serve() error {
 	}
 	defer addr.Close()
 	srv := &http.Server{
-		Handler: util.InstallHTTPLogger(checkMetadataFlavor(r)),
+		Handler: util.InstallHTTPLogger(r),
 	}
 
 	log.Infof("Listening %v...", addr.Addr().String())
@@ -80,9 +82,15 @@ func (s *Server) Serve() error {
 	return srv.Serve(addr)
 }
 
-func checkMetadataFlavor(handler http.Handler) *http.ServeMux {
-	m := http.NewServeMux()
-	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	// Some clients (e.g. appengine devserver) detects metadataserver
+	// by accessing the root path without Metadata-Flavor header in request,
+	// but expecting Metadata-Flavor header in response.
+	s.writeTextResponse(w, "computeMetadata/\n")
+}
+
+func checkMetadataFlavorMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Metadata-Flavor") != "Google" {
 			log.WithField("method", r.Method).
 				WithField("path", r.URL.Path).
@@ -90,9 +98,8 @@ func checkMetadataFlavor(handler http.Handler) *http.ServeMux {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		handler.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 	})
-	return m
 }
 
 func (s *Server) credentialsFromFile(ctx context.Context, file string, scopes ...string) (*google.Credentials, error) {
